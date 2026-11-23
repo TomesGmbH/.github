@@ -15,6 +15,7 @@ trap 'rm -rf "$work"' EXIT
 TAG_SHA=1111111111111111111111111111111111111111
 HEAD_SHA=2222222222222222222222222222222222222222
 OTHER_SHA=3333333333333333333333333333333333333333
+BASE_SHA=4444444444444444444444444444444444444444
 
 # Fake gh: `gh api [--paginate] <path> [--jq <expr>]`. The response for
 # <path> is $FIXTURES/<path with / and ? replaced by _>; a missing fixture is
@@ -52,11 +53,17 @@ review() { # review <login> <state> <commit> <association> <submitted_at>
 
 # Baseline: v1.2.3 points to TAG_SHA, which is not on main and is the merge
 # commit of PR 7 into hotfix/v1.2, approved on its head by member "bob".
+ahead() { # ahead <commit>...: the commits the tag adds to main
+  local list="" c
+  for c in "$@"; do list="$list${list:+,}{\"sha\":\"$c\"}"; done
+  fixture "$R/compare/main...$TAG_SHA?per_page=100" "{\"ahead_by\":$#,\"commits\":[$list]}"
+}
 reset_fixtures() {
   FIXTURES="$(mktemp -d "$work/fx.XXXX")"
   export FIXTURES
   fixture "$R/commits/refs/tags/v1.2.3" "{\"sha\":\"$TAG_SHA\"}"
   fixture "$R/compare/main...$TAG_SHA" '{"status":"diverged"}'
+  ahead "$TAG_SHA"
   fixture "$R/commits/$TAG_SHA/pulls" "[{\"number\":7,\"merged_at\":\"2026-11-20T10:00:00Z\",\"merge_commit_sha\":\"$TAG_SHA\"}]"
   fixture "$R/pulls/7" "$(pr_json hotfix/v1.2 alice)"
   fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z)]"
@@ -148,6 +155,31 @@ on_run "suffixed tag matching the pattern" ok RUN_TAG=v1.2.3-beta.4 \
   'TAG_PATTERN=^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[0-9]+$'
 grep -q "tag=v1.2.3-beta.4" "$work/out" && grep -q "break-glass=false" "$work/out" ||
   { failures=$((failures + 1)); echo "FAIL: suffixed tag output"; }
+
+# A hotfix branch carrying a commit that was pushed to it directly: the
+# follow-up pull request's approval does not cover it.
+reset_fixtures
+ahead "$BASE_SHA" "$TAG_SHA"
+fixture "$R/commits/$BASE_SHA/pulls" '[]'
+on_run "hotfix branch with a directly pushed commit" fail
+
+reset_fixtures
+ahead "$BASE_SHA" "$TAG_SHA"
+fixture "$R/commits/$BASE_SHA/pulls" '[{"number":6,"merged_at":"2026-11-19T10:00:00Z","merge_commit_sha":"5555555555555555555555555555555555555555"}]'
+fixture "$R/pulls/6" "$(pr_json hotfix/v1.2 carol)"
+fixture "$R/pulls/6/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-19T09:00:00Z)]"
+on_run "hotfix branch whose earlier commit came through an approved pull request" ok
+
+reset_fixtures
+ahead "$BASE_SHA" "$TAG_SHA"
+fixture "$R/commits/$BASE_SHA/pulls" '[{"number":6,"merged_at":"2026-11-19T10:00:00Z","merge_commit_sha":"5555555555555555555555555555555555555555"}]'
+fixture "$R/pulls/6" "$(pr_json hotfix/v1.2 carol)"
+fixture "$R/pulls/6/reviews" "[$(review carol APPROVED "$HEAD_SHA" MEMBER 2026-11-19T09:00:00Z)]"
+on_run "earlier hotfix commit from a self-approved pull request" fail
+
+reset_fixtures
+fixture "$R/compare/main...$TAG_SHA?per_page=100" "{\"ahead_by\":101,\"commits\":[{\"sha\":\"$TAG_SHA\"}]}"
+on_run "more commits ahead of main than can be checked" fail
 
 reset_fixtures
 rm "$FIXTURES/$(tr '/?' '__' <<<"$R/compare/main...$TAG_SHA")"
