@@ -61,10 +61,15 @@ ahead() { # ahead <commit>...: the commits the tag adds to main
   for c in "$@"; do list="$list${list:+,}{\"sha\":\"$c\"}"; done
   fixture "$R/compare/main...$TAG_SHA?per_page=100" "{\"ahead_by\":$#,\"commits\":[$list]}"
 }
+github_merge() { # github_merge <commit>: a merge commit GitHub created and signed
+  fixture "$R/commits/$1" '{"commit":{"committer":{"email":"noreply@github.com"},"verification":{"verified":true}}}'
+}
 reset_fixtures() {
   FIXTURES="$(mktemp -d "$work/fx.XXXX")"
   export FIXTURES
   fixture "$R/commits/refs/tags/v1.2.3" "{\"sha\":\"$TAG_SHA\"}"
+  github_merge "$TAG_SHA"
+  github_merge "$MERGE6_SHA"
   fixture "$R/compare/main...$TAG_SHA" '{"status":"diverged"}'
   ahead "$TAG_SHA"
   fixture "$R/commits/$TAG_SHA/pulls" "[{\"number\":7,\"merged_at\":\"2026-11-20T10:00:00Z\",\"merge_commit_sha\":\"$TAG_SHA\"}]"
@@ -131,6 +136,14 @@ on_run "approval superseded by a change request" "fail:is neither on main"
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review carol CHANGES_REQUESTED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
 on_run "approval while another reviewer requests changes" "fail:is neither on main"
+
+reset_fixtures
+fixture "$R/commits/$TAG_SHA" '{"commit":{"committer":{"email":"dev@example.com"},"verification":{"verified":false}}}'
+on_run "merge commit made locally and pushed" "fail:is neither on main"
+
+reset_fixtures
+fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review eve CHANGES_REQUESTED "$HEAD_SHA" NONE 2026-11-20T09:30:00Z)]"
+on_run "change request by a non-member does not veto" ok
 
 reset_fixtures
 touch "$FIXTURES/$(tr '/?' '__' <<<"$R/pulls/7/reviews").fail"

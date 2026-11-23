@@ -8,8 +8,8 @@
 # caller's release tag pattern, still points to the commit that was tested,
 # and that commit
 #   - is part of the default branch, or
-#   - is the merge result of a pull request into the default branch or a
-#     hotfix/* branch whose head commit a member other than the author
+#   - is the merge result, made by GitHub, of a pull request into the
+#     default branch or a hotfix/* branch whose head commit a member other than the author
 #     approved, with no later change request or dismissal (reviewed hotfixes),
 #     and every other commit it adds to the default branch came in through
 #     such a pull request as well (nothing pushed to the hotfix branch
@@ -100,6 +100,14 @@ approved_pr() {
       echo "pull request #$pr was not merged into the tagged history" >&2
       continue
     fi
+    # The merge must be GitHub's own (merge button, gh pr merge, merge
+    # queue): a merge commit made locally and pushed can carry changes the
+    # approved head does not contain.
+    if [[ "$(gh api "repos/$REPO/commits/$merge_sha" \
+      --jq '.commit.verification.verified == true and .commit.committer.email == "noreply@github.com"')" != true ]]; then
+      echo "pull request #$pr was not merged by GitHub ($merge_sha)" >&2
+      continue
+    fi
     pr_json="$(gh api "repos/$REPO/pulls/$pr")" || return 1
     author="$(jq -r .user.login <<<"$pr_json")" || return 1
     base="$(jq -r .base.ref <<<"$pr_json")" || return 1
@@ -113,18 +121,16 @@ approved_pr() {
     # An approval counts only if it is the reviewer's latest decision, was
     # given on the merged head commit (no unreviewed commits pushed after
     # it), and comes from a member or collaborator other than the author.
-    # Any reviewer whose latest decision requests changes vetoes the PR.
+    # Any such reviewer whose latest decision requests changes vetoes it.
     # All pages or nothing: a partial list could hide a later veto.
     reviews="$(gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[]')" || return 1
     approver="$(jq -rs --arg author "$author" --arg head "$head_sha" '
         map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
         | group_by(.user.login)
         | map(sort_by(.submitted_at) | last)
+        | map(select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR"))
         | if any(.state == "CHANGES_REQUESTED") then [] else . end
-        | map(select(.state == "APPROVED"
-            and .user.login != $author
-            and .commit_id == $head
-            and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")))
+        | map(select(.state == "APPROVED" and .user.login != $author and .commit_id == $head))
         | .[0].user.login // empty' <<<"$reviews")" || return 1
     if [[ -n "$approver" ]]; then
       echo "pull request #$pr into $base, approved by $approver"
