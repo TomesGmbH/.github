@@ -1,0 +1,6 @@
+# actionlint (v1.7.12) does not know the job context properties GitHub added
+# in September 2026; verify-release.yml reads its own commit from them.
+paths:
+  .github/workflows/verify-release.yml:
+    ignore:
+      - 'property "workflow_(sha|repository)" is not defined in object type'

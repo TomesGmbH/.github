@@ -1,0 +1,154 @@
+name: Verify release
+
+# Decides whether a release tag may reach production (IDA-7171). Called by a
+# repository's production workflow, which runs from the default branch
+# (workflow_run on its tests-only "Release tag" workflow, or workflow_dispatch
+# for break-glass), before any job of that workflow obtains production
+# credentials or signing secrets.
+#
+#   workflow_run       the tag run must have succeeded on a push; the tag must
+#                      still point to the tested commit, and that commit must
+#                      be on the default branch or the merge of a pull request
+#                      into it or into hotfix/* approved on its head by a
+#                      member other than the author.
+#   workflow_dispatch  break-glass: the caller's dispatch inputs `tag` and
+#                      `incident` (INC key) are required; any tag matching the
+#                      pattern is deployed without the provenance check. The
+#                      review issue is opened before this workflow succeeds,
+#                      so the deploy cannot start without it. A re-run is
+#                      refused: start a new dispatch.
+#
+# Callers pin this workflow by full commit SHA and grant contents: read,
+# pull-requests: read and issues: write. The deploy job must use only the
+# outputs (sha for the checkout, tag for versions and releases), never
+# github.sha or github.ref_name, which name the default branch here. It must
+# also not run on a re-run of a break-glass dispatch, whose outputs GitHub
+# keeps:
+#
+#   verify:
+#     if: >-
+#       github.event_name == 'workflow_dispatch' ||
+#       (github.event.workflow_run.conclusion == 'success' &&
+#        github.event.workflow_run.event == 'push')
+#     uses: TomesGmbH/.github/.github/workflows/verify-release.yml@<full sha>
+#     permissions: {contents: read, pull-requests: read, issues: write}
+#     with:
+#       tag-pattern: '^v[0-9]+\.[0-9]+\.[0-9]+$'
+#   deploy:
+#     needs: verify
+#     if: github.event_name == 'workflow_run' || github.run_attempt == 1
+#
+# The script is checked out from this workflow's own commit (job.workflow_sha),
+# so the caller's SHA pin covers it as well.
+
+on:
+  workflow_call:
+    inputs:
+      tag-pattern:
+        description: Bash regular expression the release tag must match, anchored (e.g. ^v[0-9]+\.[0-9]+\.[0-9]+$).
+        type: string
+        required: true
+      default-branch:
+        description: Branch that holds reviewed code. Empty means the repository's default branch.
+        type: string
+        required: false
+        default: ""
+    outputs:
+      tag:
+        description: The verified release tag.
+        value: ${{ jobs.verify.outputs.tag }}
+      sha:
+        description: The commit the tag points to; build and deploy exactly this commit.
+        value: ${{ jobs.verify.outputs.sha }}
+      provenance:
+        description: Why the commit may be deployed (default branch, approved pull request, or break-glass INC key).
+        value: ${{ jobs.verify.outputs.provenance }}
+      break-glass:
+        description: '"true" for a break-glass dispatch, otherwise "false".'
+        value: ${{ jobs.verify.outputs.break-glass }}
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read # approvals of hotfix pull requests
+    outputs:
+      tag: ${{ steps.verify.outputs.tag }}
+      sha: ${{ steps.verify.outputs.sha }}
+      provenance: ${{ steps.verify.outputs.provenance }}
+      break-glass: ${{ steps.verify.outputs.break-glass }}
+    steps:
+      # Without its own commit the checkout below would fall back to the
+      # default branch of this repository, which no caller pinned.
+      - name: Resolve this workflow's commit
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+        run: |
+          if ! [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ && "$WORKFLOW_REPOSITORY" == TomesGmbH/.github ]]; then
+            echo "::error::cannot resolve the commit of verify-release.yml ('$WORKFLOW_REPOSITORY@$WORKFLOW_SHA')"
+            exit 1
+          fi
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .release-verifier
+          sparse-checkout: scripts
+          persist-credentials: false
+      - name: Verify the release tag
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
+          TAG_PATTERN: ${{ inputs.tag-pattern }}
+          RUN_TAG: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          DISPATCH_TAG: ${{ github.event.inputs.tag }}
+          INCIDENT: ${{ github.event.inputs.incident }}
+        run: .release-verifier/scripts/verify-release-provenance.sh
+
+  break_glass_review:
+    # A break-glass deploy may only start once its review issue exists, so a
+    # cancelled or failed run cannot leave a deploy without one. The verify
+    # script refuses re-runs, so there is one issue per dispatch.
+    needs: verify
+    if: needs.verify.outputs.break-glass == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Open the review issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify.outputs.tag }}
+          SHA: ${{ needs.verify.outputs.sha }}
+          INCIDENT: ${{ github.event.inputs.incident }}
+          ACTOR: ${{ github.actor }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="$(printf '%s\n' \
+            "Break-glass production deploy without provenance check (IDA-7171)." \
+            "" \
+            "- Tag: \`$TAG\` (\`$SHA\`)" \
+            "- Incident: $INCIDENT" \
+            "- Started by: @$ACTOR" \
+            "- Run (deploy result): $RUN_URL" \
+            "" \
+            "Review within one working day: compare the deployed commit with the default branch, confirm every change was needed for the incident, and merge it through a reviewed pull request. Close this issue with the result.")"
+          gh issue create --repo "$REPO" \
+            --title "Break-glass deploy $TAG ($INCIDENT): review required" \
+            --body "$body"

@@ -1,0 +1,23 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  release-provenance:
+    # verify-release-provenance.sh decides which commits may reach production
+    # in every repository that calls verify-release.yml (IDA-7171).
+    name: Release provenance script tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          sparse-checkout: scripts
+          persist-credentials: false
+      - run: scripts/verify-release-provenance_test.sh
