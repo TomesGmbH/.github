@@ -78,21 +78,32 @@ esac
 # approved_pr <commit> <merge|contains>: prints the first merged pull request
 # into the default branch or a hotfix/* branch that has <commit> as its merge
 # commit (merge) or among its commits (contains) and whose head commit a
-# member other than the author approved as their latest decision. Fails when
-# there is none.
+# member other than the author approved as their latest decision, with no
+# outstanding change request. In contains mode the pull request's merge
+# commit must itself be in the tagged history ($ahead_commits): an approval
+# of an unrelated merge that happens to contain <commit> does not count.
+# Fails when there is none or an API call fails. Callers use it on the left
+# of ||, where errexit is off, so every step checks its own status.
 approved_pr() {
-  local commit="$1" mode="$2" filter prs pr pr_json author base head_sha approver
+  local commit="$1" mode="$2" filter prs pr merge_sha pr_json author base head_sha reviews approver
   if [[ "$mode" == merge ]]; then
     filter="select(.merged_at != null and .merge_commit_sha == \"$commit\")"
   else
     filter="select(.merged_at != null)"
   fi
-  prs="$(gh api --paginate "repos/$REPO/commits/$commit/pulls" --jq ".[] | $filter | .number")"
-  for pr in $prs; do
-    pr_json="$(gh api "repos/$REPO/pulls/$pr")"
-    author="$(jq -r .user.login <<<"$pr_json")"
-    base="$(jq -r .base.ref <<<"$pr_json")"
-    head_sha="$(jq -r .head.sha <<<"$pr_json")"
+  prs="$(gh api --paginate "repos/$REPO/commits/$commit/pulls" \
+    --jq ".[] | $filter | \"\\(.number) \\(.merge_commit_sha)\"")" || return 1
+  # fd 3: nothing in the loop may consume the list from stdin.
+  while read -r pr merge_sha <&3; do
+    [[ -n "$pr" ]] || continue
+    if [[ "$mode" == contains ]] && ! grep -qxF "$merge_sha" <<<"$ahead_commits"; then
+      echo "pull request #$pr was not merged into the tagged history" >&2
+      continue
+    fi
+    pr_json="$(gh api "repos/$REPO/pulls/$pr")" || return 1
+    author="$(jq -r .user.login <<<"$pr_json")" || return 1
+    base="$(jq -r .base.ref <<<"$pr_json")" || return 1
+    head_sha="$(jq -r .head.sha <<<"$pr_json")" || return 1
     # Only the protected default branch and hotfix branches count; a merge
     # into any other branch is not a release path.
     if [[ "$base" != "$DEFAULT_BRANCH" && "$base" != hotfix/* ]]; then
@@ -103,8 +114,9 @@ approved_pr() {
     # given on the merged head commit (no unreviewed commits pushed after
     # it), and comes from a member or collaborator other than the author.
     # Any reviewer whose latest decision requests changes vetoes the PR.
-    approver="$(gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[]' |
-      jq -rs --arg author "$author" --arg head "$head_sha" '
+    # All pages or nothing: a partial list could hide a later veto.
+    reviews="$(gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[]')" || return 1
+    approver="$(jq -rs --arg author "$author" --arg head "$head_sha" '
         map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
         | group_by(.user.login)
         | map(sort_by(.submitted_at) | last)
@@ -113,13 +125,13 @@ approved_pr() {
             and .user.login != $author
             and .commit_id == $head
             and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")))
-        | .[0].user.login // empty')"
+        | .[0].user.login // empty' <<<"$reviews")" || return 1
     if [[ -n "$approver" ]]; then
       echo "pull request #$pr into $base, approved by $approver"
       return 0
     fi
     echo "pull request #$pr has no current approval on its head commit by another member" >&2
-  done
+  done 3<<<"$prs"
   return 1
 }
 
@@ -146,10 +158,10 @@ else
       fail "$tag ($sha) is neither on $DEFAULT_BRANCH nor the merge of an approved pull request. Merge the fix through a reviewed pull request and tag its merge commit, or start a break-glass deploy with the INC key."
     compare="$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$sha?per_page=100")"
     ahead="$(jq -r .ahead_by <<<"$compare")"
-    commits="$(jq -r '.commits[].sha' <<<"$compare")"
-    [[ "$(grep -c . <<<"$commits")" == "$ahead" ]] ||
+    ahead_commits="$(jq -r '.commits[].sha' <<<"$compare")"
+    [[ "$(grep -c . <<<"$ahead_commits")" == "$ahead" ]] ||
       fail "$tag ($sha) adds $ahead commits to $DEFAULT_BRANCH, more than can be checked; release it from $DEFAULT_BRANCH or with break-glass"
-    for commit in $commits; do
+    for commit in $ahead_commits; do
       [[ "$commit" == "$sha" ]] && continue
       approved_pr "$commit" contains >/dev/null ||
         fail "$tag ($sha) contains $commit, which no approved pull request into $DEFAULT_BRANCH or hotfix/* brought in (pushed directly?). Merge it through a reviewed pull request, or start a break-glass deploy with the INC key."

@@ -16,6 +16,7 @@ TAG_SHA=1111111111111111111111111111111111111111
 HEAD_SHA=2222222222222222222222222222222222222222
 OTHER_SHA=3333333333333333333333333333333333333333
 BASE_SHA=4444444444444444444444444444444444444444
+MERGE6_SHA=5555555555555555555555555555555555555555
 
 # Fake gh: `gh api [--paginate] <path> [--jq <expr>]`. The response for
 # <path> is $FIXTURES/<path with / and ? replaced by _>; a missing fixture is
@@ -36,6 +37,8 @@ done
 file="$FIXTURES/$(tr '/?' '__' <<<"$path")"
 [[ -f "$file" ]] || { echo "fake gh: HTTP 404 $path" >&2; exit 1; }
 if [[ -n "$expr" ]]; then jq -r "$expr" "$file"; else cat "$file"; fi
+# <fixture>.fail: the first page was served, a later page failed.
+[[ ! -f "$file.fail" ]] || { echo "fake gh: HTTP 502 on a later page of $path" >&2; exit 1; }
 EOF
 chmod +x "$work/bin/gh"
 
@@ -130,6 +133,10 @@ fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-
 on_run "approval while another reviewer requests changes" "fail:is neither on main"
 
 reset_fixtures
+touch "$FIXTURES/$(tr '/?' '__' <<<"$R/pulls/7/reviews").fail"
+on_run "review list that fails after the first page" "fail:is neither on main"
+
+reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review bob DISMISSED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
 on_run "dismissed approval" "fail:is neither on main"
 
@@ -177,10 +184,15 @@ ahead "$BASE_SHA" "$TAG_SHA"
 fixture "$R/commits/$BASE_SHA/pulls" '[{"number":6,"merged_at":"2026-11-19T10:00:00Z","merge_commit_sha":"5555555555555555555555555555555555555555"}]'
 fixture "$R/pulls/6" "$(pr_json hotfix/v1.2 carol)"
 fixture "$R/pulls/6/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-19T09:00:00Z)]"
+on_run "earlier hotfix commit covered only by an unrelated merge" "fail:no approved pull request into"
+
+ahead "$BASE_SHA" "$MERGE6_SHA" "$TAG_SHA"
+fixture "$R/commits/$MERGE6_SHA/pulls" "[{\"number\":6,\"merged_at\":\"2026-11-19T10:00:00Z\",\"merge_commit_sha\":\"$MERGE6_SHA\"}]"
 on_run "hotfix branch whose earlier commit came through an approved pull request" ok
 
 reset_fixtures
-ahead "$BASE_SHA" "$TAG_SHA"
+ahead "$BASE_SHA" "$MERGE6_SHA" "$TAG_SHA"
+fixture "$R/commits/$MERGE6_SHA/pulls" "[{\"number\":6,\"merged_at\":\"2026-11-19T10:00:00Z\",\"merge_commit_sha\":\"$MERGE6_SHA\"}]"
 fixture "$R/commits/$BASE_SHA/pulls" '[{"number":6,"merged_at":"2026-11-19T10:00:00Z","merge_commit_sha":"5555555555555555555555555555555555555555"}]'
 fixture "$R/pulls/6" "$(pr_json hotfix/v1.2 carol)"
 fixture "$R/pulls/6/reviews" "[$(review carol APPROVED "$HEAD_SHA" MEMBER 2026-11-19T09:00:00Z)]"
