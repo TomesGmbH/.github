@@ -127,7 +127,7 @@ approved_pr() {
     approver="$(jq -rs --arg author "$author" --arg head "$head_sha" '
         map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
         | group_by(.user.login)
-        | map(sort_by(.submitted_at) | last)
+        | map(sort_by([.submitted_at, .id]) | last) # ids break same-second ties
         | map(select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR"))
         | if any(.state == "CHANGES_REQUESTED") then [] else . end
         | map(select(.state == "APPROVED" and .user.login != $author and .commit_id == $head))

@@ -21,3 +21,17 @@ jobs:
           sparse-checkout: scripts
           persist-credentials: false
       - run: scripts/verify-release-provenance_test.sh
+
+  actionlint:
+    # Lints every workflow with .github/actionlint.yaml; the version is the
+    # one the ignore rule in that file was written for.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install actionlint
+        run: GOBIN="$RUNNER_TEMP/bin" go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Run actionlint
+        run: '"$RUNNER_TEMP/bin/actionlint"'

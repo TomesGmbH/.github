@@ -50,8 +50,9 @@ R=repos/TomesGmbH/example
 pr_json() { # pr_json <base> <author>
   printf '{"user":{"login":"%s"},"base":{"ref":"%s"},"head":{"sha":"%s"}}' "$2" "$1" "$HEAD_SHA"
 }
-review() { # review <login> <state> <commit> <association> <submitted_at>
-  printf '{"user":{"login":"%s"},"state":"%s","commit_id":"%s","author_association":"%s","submitted_at":"%s"}' "$@"
+review() { # review <login> <state> <commit> <association> <submitted_at> [id]
+  printf '{"user":{"login":"%s"},"state":"%s","commit_id":"%s","author_association":"%s","submitted_at":"%s","id":%s}' \
+    "$1" "$2" "$3" "$4" "$5" "${6:-1}"
 }
 
 # Baseline: v1.2.3 points to TAG_SHA, which is not on main and is the merge
@@ -144,6 +145,10 @@ on_run "merge commit made locally and pushed" "fail:is neither on main"
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review eve CHANGES_REQUESTED "$HEAD_SHA" NONE 2026-11-20T09:30:00Z)]"
 on_run "change request by a non-member does not veto" ok
+
+reset_fixtures
+fixture "$R/pulls/7/reviews" "[$(review bob CHANGES_REQUESTED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z 2),$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z 1)]"
+on_run "change request in the same second as the approval" "fail:is neither on main"
 
 reset_fixtures
 touch "$FIXTURES/$(tr '/?' '__' <<<"$R/pulls/7/reviews").fail"
