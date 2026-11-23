@@ -21,7 +21,7 @@
 #   EVENT           github.event_name (workflow_run | workflow_dispatch)
 #   REF             github.ref (a dispatch must run on the default branch)
 #   REPO            owner/name
-#   DEFAULT_BRANCH  default branch name
+#   DEFAULT_BRANCH  default branch name (provenance and break-glass ref)
 #   TAG_PATTERN     bash regular expression the release tag must match
 #   RUN_TAG/RUN_SHA tag and commit of the completed tag workflow run
 #   RUN_CONCLUSION  conclusion of that run (must be success)
@@ -102,11 +102,13 @@ approved_pr() {
     # An approval counts only if it is the reviewer's latest decision, was
     # given on the merged head commit (no unreviewed commits pushed after
     # it), and comes from a member or collaborator other than the author.
+    # Any reviewer whose latest decision requests changes vetoes the PR.
     approver="$(gh api --paginate "repos/$REPO/pulls/$pr/reviews" --jq '.[]' |
       jq -rs --arg author "$author" --arg head "$head_sha" '
         map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
         | group_by(.user.login)
         | map(sort_by(.submitted_at) | last)
+        | if any(.state == "CHANGES_REQUESTED") then [] else . end
         | map(select(.state == "APPROVED"
             and .user.login != $author
             and .commit_id == $head

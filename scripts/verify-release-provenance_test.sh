@@ -71,7 +71,7 @@ reset_fixtures() {
 
 SEMVER='^v[0-9]+\.[0-9]+\.[0-9]+$'
 pass=0 failures=0
-run() { # run <name> <expected: ok|fail> [env assignments...]
+run() { # run <name> <expected: ok|fail:<message part>> [env assignments...]
   local name="$1" expect="$2" output rc
   shift 2
   : >"$work/out" # each case's outputs only
@@ -80,7 +80,10 @@ run() { # run <name> <expected: ok|fail> [env assignments...]
     DEFAULT_BRANCH=main TAG_PATTERN="$SEMVER" "$@" bash "$script" 2>&1)"
   rc=$?
   set -e
-  if { [[ "$expect" == ok && $rc -eq 0 ]] || [[ "$expect" == fail && $rc -ne 0 ]]; }; then
+  # A rejection must fail for the reason under test and publish no outputs,
+  # so a missing fixture or an earlier check cannot make it pass.
+  if { [[ "$expect" == ok && $rc -eq 0 ]] ||
+    [[ "$expect" == fail:* && $rc -ne 0 && "$output" == *"${expect#fail:}"* && ! -s "$work/out" ]]; }; then
     pass=$((pass + 1))
   else
     failures=$((failures + 1))
@@ -104,27 +107,31 @@ grep -q "provenance=pull request #7 into hotfix/v1.2, approved by bob" "$work/ou
 
 reset_fixtures
 fixture "$R/commits/$TAG_SHA/pulls" '[]'
-on_run "commit without pull request (pushed directly)" fail
+on_run "commit without pull request (pushed directly)" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7" "$(pr_json feature/x alice)"
-on_run "pull request merged into a non-release branch" fail
+on_run "pull request merged into a non-release branch" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review alice APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z)]"
-on_run "self-approval" fail
+on_run "self-approval" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$OTHER_SHA" MEMBER 2026-11-20T09:00:00Z)]"
-on_run "approval on an earlier commit (stale)" fail
+on_run "approval on an earlier commit (stale)" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review bob CHANGES_REQUESTED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
-on_run "approval superseded by a change request" fail
+on_run "approval superseded by a change request" "fail:is neither on main"
+
+reset_fixtures
+fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review carol CHANGES_REQUESTED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
+on_run "approval while another reviewer requests changes" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review bob DISMISSED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
-on_run "dismissed approval" fail
+on_run "dismissed approval" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review bob APPROVED "$HEAD_SHA" MEMBER 2026-11-20T09:00:00Z),$(review bob COMMENTED "$HEAD_SHA" MEMBER 2026-11-20T09:30:00Z)]"
@@ -132,21 +139,23 @@ on_run "a later comment keeps the approval" ok
 
 reset_fixtures
 fixture "$R/pulls/7/reviews" "[$(review mallory APPROVED "$HEAD_SHA" NONE 2026-11-20T09:00:00Z)]"
-on_run "approval by a non-member" fail
+on_run "approval by a non-member" "fail:is neither on main"
 
 reset_fixtures
 fixture "$R/commits/$TAG_SHA/pulls" "[{\"number\":7,\"merged_at\":null,\"merge_commit_sha\":\"$TAG_SHA\"}]"
-on_run "unmerged pull request" fail
+on_run "unmerged pull request" "fail:is neither on main"
 
 reset_fixtures
-on_run "tag moved after the tests" fail RUN_SHA="$OTHER_SHA"
-on_run "not a release tag" fail RUN_TAG=feature/x
-on_run "unknown tag" fail RUN_TAG=v9.9.9
-on_run "triggering run without commit" fail RUN_SHA=
-on_run "failed test run" fail RUN_CONCLUSION=failure
-on_run "triggering run not started by a push" fail RUN_EVENT=workflow_dispatch
-on_run "tag with a suffix the pattern does not allow" fail RUN_TAG=v1.2.3-prod
-on_run "tag with characters outside a release tag" fail 'TAG_PATTERN=^v.*$' 'RUN_TAG=v1.2.3/../x'
+reset_fixtures
+on_run "tag moved after the tests" "fail:moved from the tested commit" RUN_SHA="$OTHER_SHA"
+on_run "not a release tag" "fail:is not a release tag" RUN_TAG=feature/x
+on_run "unknown tag" "fail:does not exist" RUN_TAG=v9.9.9
+on_run "triggering run without commit" "fail:has no commit" RUN_SHA=
+on_run "failed test run" "fail:did not succeed" RUN_CONCLUSION=failure
+on_run "triggering run not started by a push" "fail:not by a tag push" RUN_EVENT=workflow_dispatch
+on_run "tag with a suffix the pattern does not allow" "fail:is not a release tag" RUN_TAG=v1.2.3-prod
+fixture "$R/commits/refs/tags/v1.2.3/../x" "{\"sha\":\"$TAG_SHA\"}"
+on_run "tag with characters outside a release tag" "fail:characters a release tag never has" 'TAG_PATTERN=^v.*$' 'RUN_TAG=v1.2.3/../x'
 
 # Channel patterns (desktop, bridge): the suffix is part of the tag.
 reset_fixtures
@@ -161,7 +170,7 @@ grep -q "tag=v1.2.3-beta.4" "$work/out" && grep -q "break-glass=false" "$work/ou
 reset_fixtures
 ahead "$BASE_SHA" "$TAG_SHA"
 fixture "$R/commits/$BASE_SHA/pulls" '[]'
-on_run "hotfix branch with a directly pushed commit" fail
+on_run "hotfix branch with a directly pushed commit" "fail:no approved pull request into"
 
 reset_fixtures
 ahead "$BASE_SHA" "$TAG_SHA"
@@ -175,15 +184,15 @@ ahead "$BASE_SHA" "$TAG_SHA"
 fixture "$R/commits/$BASE_SHA/pulls" '[{"number":6,"merged_at":"2026-11-19T10:00:00Z","merge_commit_sha":"5555555555555555555555555555555555555555"}]'
 fixture "$R/pulls/6" "$(pr_json hotfix/v1.2 carol)"
 fixture "$R/pulls/6/reviews" "[$(review carol APPROVED "$HEAD_SHA" MEMBER 2026-11-19T09:00:00Z)]"
-on_run "earlier hotfix commit from a self-approved pull request" fail
+on_run "earlier hotfix commit from a self-approved pull request" "fail:no approved pull request into"
 
 reset_fixtures
 fixture "$R/compare/main...$TAG_SHA?per_page=100" "{\"ahead_by\":101,\"commits\":[{\"sha\":\"$TAG_SHA\"}]}"
-on_run "more commits ahead of main than can be checked" fail
+on_run "more commits ahead of main than can be checked" "fail:more than can be checked"
 
 reset_fixtures
 rm "$FIXTURES/$(tr '/?' '__' <<<"$R/compare/main...$TAG_SHA")"
-on_run "API failure fails closed" fail
+on_run "API failure fails closed" "fail:HTTP 404"
 
 reset_fixtures
 bg() { run "$1" "$2" EVENT=workflow_dispatch REF=refs/heads/main DISPATCH_TAG=v1.2.3 \
@@ -191,12 +200,12 @@ bg() { run "$1" "$2" EVENT=workflow_dispatch REF=refs/heads/main DISPATCH_TAG=v1
 bg "break-glass with INC key" ok
 grep -q "break-glass=true" "$work/out" ||
   { failures=$((failures + 1)); echo "FAIL: break-glass output"; }
-bg "break-glass re-run" fail RUN_ATTEMPT=2
-bg "break-glass tag outside the pattern" fail DISPATCH_TAG=v1.2.3-dev.1
-bg "break-glass without INC key" fail INCIDENT=
-bg "break-glass with malformed INC key" fail 'INCIDENT=INC-1; rm -rf /'
-bg "break-glass from another branch" fail REF=refs/heads/evil
-run "unsupported event" fail EVENT=push
+bg "break-glass re-run" "fail:cannot be re-run" RUN_ATTEMPT=2
+bg "break-glass tag outside the pattern" "fail:is not a release tag" DISPATCH_TAG=v1.2.3-dev.1
+bg "break-glass without INC key" "fail:needs the INC key" INCIDENT=
+bg "break-glass with malformed INC key" "fail:needs the INC key" 'INCIDENT=INC-1; rm -rf /'
+bg "break-glass from another branch" "fail:must be started on main" REF=refs/heads/evil
+run "unsupported event" "fail:unsupported event" EVENT=push
 
 echo "$pass passed, $failures failed"
 [[ $failures -eq 0 ]]

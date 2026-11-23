@@ -21,9 +21,11 @@ name: Verify release
 # Callers pin this workflow by full commit SHA and grant contents: read,
 # pull-requests: read and issues: write. The deploy job must use only the
 # outputs (sha for the checkout, tag for versions and releases), never
-# github.sha or github.ref_name, which name the default branch here. It must
-# also not run on a re-run of a break-glass dispatch, whose outputs GitHub
-# keeps:
+# github.sha or github.ref_name, which name the default branch here. Tags can
+# be moved: a step that publishes under the tag name (GitHub release) checks
+# again that the tag still points to sha. The deploy must also not run on a
+# re-run of a break-glass dispatch, whose outputs GitHub keeps; re-running a
+# normal release deploys the same verified sha again:
 #
 #   verify:
 #     if: >-
@@ -48,11 +50,6 @@ on:
         description: Bash regular expression the release tag must match, anchored (e.g. ^v[0-9]+\.[0-9]+\.[0-9]+$).
         type: string
         required: true
-      default-branch:
-        description: Branch that holds reviewed code. Empty means the repository's default branch.
-        type: string
-        required: false
-        default: ""
     outputs:
       tag:
         description: The verified release tag.
@@ -108,7 +105,7 @@ jobs:
           EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
           REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ inputs.default-branch || github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           TAG_PATTERN: ${{ inputs.tag-pattern }}
           RUN_TAG: ${{ github.event.workflow_run.head_branch }}
           RUN_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -121,10 +118,11 @@ jobs:
 
   break_glass_review:
     # A break-glass deploy may only start once its review issue exists, so a
-    # cancelled or failed run cannot leave a deploy without one. The verify
-    # script refuses re-runs, so there is one issue per dispatch.
+    # cancelled or failed run cannot leave a deploy without one. First attempt
+    # only: a re-run of a dispatch deploys nothing (verify refuses it, callers
+    # skip their deploy), so it must not open a second issue either.
     needs: verify
-    if: needs.verify.outputs.break-glass == 'true'
+    if: needs.verify.outputs.break-glass == 'true' && github.run_attempt == 1
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
