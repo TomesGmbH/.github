@@ -10,7 +10,10 @@ name: Verify release
 #                      still point to the tested commit, and that commit must
 #                      be on the default branch or the merge of a pull request
 #                      into it or into hotfix/* approved on its head by a
-#                      member other than the author.
+#                      member other than the author, merged by GitHub with
+#                      a merge commit or squash (rebase merges are unsigned
+#                      and rejected); every other commit the tag adds to the
+#                      default branch must come from such a merge.
 #   workflow_dispatch  break-glass: the caller's dispatch inputs `tag` and
 #                      `incident` (INC key) are required; any tag matching the
 #                      pattern is deployed without the provenance check. The

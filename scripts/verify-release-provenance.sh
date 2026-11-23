@@ -105,7 +105,7 @@ approved_pr() {
     # approved head does not contain.
     if [[ "$(gh api "repos/$REPO/commits/$merge_sha" \
       --jq '.commit.verification.verified == true and .commit.committer.email == "noreply@github.com"')" != true ]]; then
-      echo "pull request #$pr was not merged by GitHub ($merge_sha)" >&2
+      echo "pull request #$pr was not merged by GitHub with a signed merge or squash commit ($merge_sha)" >&2
       continue
     fi
     pr_json="$(gh api "repos/$REPO/pulls/$pr")" || return 1
@@ -161,7 +161,7 @@ else
     # well: a hotfix branch may carry commits pushed to it directly, which a
     # later pull request's diff (and its approval) does not show.
     provenance="$(approved_pr "$sha" merge)" ||
-      fail "$tag ($sha) is neither on $DEFAULT_BRANCH nor the merge of an approved pull request. Merge the fix through a reviewed pull request and tag its merge commit, or start a break-glass deploy with the INC key."
+      fail "$tag ($sha) is neither on $DEFAULT_BRANCH nor the merge of an approved pull request. Merge the fix through a reviewed pull request with GitHub's merge-commit or squash method (rebase merges are unsigned) and tag its merge commit, or start a break-glass deploy with the INC key."
     compare="$(gh api "repos/$REPO/compare/$DEFAULT_BRANCH...$sha?per_page=100")"
     ahead="$(jq -r .ahead_by <<<"$compare")"
     ahead_commits="$(jq -r '.commits[].sha' <<<"$compare")"
